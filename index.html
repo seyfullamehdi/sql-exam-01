@@ -63,6 +63,8 @@ body {
 .exam-header { position:sticky; top:0; z-index:100; background:rgba(10,14,26,0.95); backdrop-filter:blur(12px); border-bottom:1px solid var(--border); padding:14px 24px; display:flex; align-items:center; justify-content:space-between; gap:16px; }
 .exam-title-sm { font-weight:700; font-size:15px; color:var(--accent); }
 .timer-block { display:flex; align-items:center; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:8px 16px; }
+.viol-block { display:flex; align-items:center; gap:6px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:8px 12px; font-family:'Space Mono',monospace; font-size:14px; font-weight:700; color:var(--text2); }
+.viol-block.active { border-color:var(--danger); color:var(--danger); }
 .timer-val { font-family:'Space Mono',monospace; font-size:22px; font-weight:700; color:var(--accent); min-width:80px; transition:color 0.3s; }
 .timer-val.warn { color:var(--warning); }
 .timer-val.danger { color:var(--danger); animation:pulse 1s infinite; }
@@ -147,6 +149,9 @@ pre { background:#0d1117; border:1px solid var(--border); border-radius:8px; pad
       <div class="info-chip"><div class="val">120</div><div class="lbl">Dəqiqə</div></div>
       <div class="info-chip"><div class="val">39</div><div class="lbl">Keçid balı</div></div>
     </div>
+    <div style="background:rgba(255,209,102,0.08);border:1px solid rgba(255,209,102,0.3);border-radius:10px;padding:12px 14px;margin-bottom:24px;font-size:12.5px;line-height:1.55;color:#ffd166;">
+      🛡️ <b>Nəzarətli imtahan:</b> İmtahan tam ekran rejimində keçirilir. Tab dəyişmək, başqa pəncərəyə keçmək və ya tam ekrandan çıxmaq qeydə alınır. Çıxış yalnız <b>“İmtahanı Bitir”</b> düyməsindən sonra mümkündür.
+    </div>
     <div class="form-group">
       <label>Ad</label>
       <input type="text" id="inp-name" placeholder="Adınızı daxil edin">
@@ -177,6 +182,10 @@ pre { background:#0d1117; border:1px solid var(--border); border-radius:8px; pad
       </div>
       <div class="progress-bar"><div class="progress-fill" id="prog-fill" style="width:0%"></div></div>
     </div>
+    <div class="viol-block" id="violBlock" title="Qeydə alınan pozuntular">
+      <span>🛡️</span>
+      <span id="violCount">0</span>
+    </div>
     <div class="timer-block">
       <span>⏱</span>
       <span class="timer-val" id="timer">120:00</span>
@@ -185,6 +194,17 @@ pre { background:#0d1117; border:1px solid var(--border); border-radius:8px; pad
   <div class="exam-body" id="examBody"></div>
   <div class="submit-area">
     <button class="btn-submit" onclick="confirmSubmit()">📤 İmtahanı Bitir</button>
+  </div>
+</div>
+
+<!-- FULLSCREEN / PROCTORING OVERLAY -->
+<div id="lockOverlay" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(8,10,20,0.97);backdrop-filter:blur(8px);align-items:center;justify-content:center;padding:24px;">
+  <div style="max-width:460px;text-align:center;background:#111827;border:1px solid #ff4d6d;border-radius:20px;padding:40px 32px;">
+    <div style="font-size:52px;margin-bottom:16px;">⚠️</div>
+    <h2 style="font-size:22px;font-weight:800;color:#ff4d6d;margin-bottom:12px;">İmtahan Rejimi Pozuldu</h2>
+    <p id="lockMsg" style="font-size:15px;line-height:1.6;color:#e8edf5;margin-bottom:8px;">İmtahan tam ekran rejimindən çıxdınız və ya başqa pəncərəyə/tab-a keçdiniz.</p>
+    <p style="font-size:13px;color:#8899aa;margin-bottom:24px;">Qeydə alınan pozuntu sayı: <b id="lockViol" style="color:#ffd166;">0</b> / <b id="lockMax">3</b><br>Bu hərəkətlər avtomatik qeydə alınır.</p>
+    <button id="resumeBtn" style="width:100%;padding:15px;background:linear-gradient(135deg,#a78bfa,#7c3aed);border:none;border-radius:12px;color:#fff;font-family:Syne,sans-serif;font-size:15px;font-weight:800;cursor:pointer;">🔒 Tam ekrana qayıt və davam et</button>
   </div>
 </div>
 
@@ -896,18 +916,41 @@ const questions = [
 // ═══════════════════════════════════════════
 const PASS_SCORE = 39;
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxTIK1Kf2v21b6kDnjNTIQeQjGLYticlZrM5D6udGmKXzGKOsGGx1y-kZ6ewjxIGZPy/exec';
+const MAX_VIOLATIONS = 3; // bu qədər pozuntudan sonra imtahan avtomatik bitir
 
 let studentName='', studentEmail='';
 let timeLeft = 120*60;
 let timerInterval = null;
 let startTime = null;
 let userAnswers = {};
+let examActive = false;
+let violations = 0;
+let finished = false;
+let blurTimer = null;
 
 function $(id){ return document.getElementById(id); }
 function showScreen(id){ document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active')); $(id).classList.add('active'); }
 function fmtTime(sec){ const m=Math.floor(sec/60),s=sec%60; return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'); }
 
+// ═══════════════════════════════════════════
+// FULLSCREEN
+// ═══════════════════════════════════════════
+function enterFullscreen(){
+  const el=document.documentElement;
+  const req=el.requestFullscreen||el.webkitRequestFullscreen||el.msRequestFullscreen;
+  if(req){ try{ const p=req.call(el); if(p&&p.catch)p.catch(function(){}); }catch(e){} }
+}
+function exitFullscreen(){
+  if(document.fullscreenElement||document.webkitFullscreenElement){
+    const ex=document.exitFullscreen||document.webkitExitFullscreen||document.msExitFullscreen;
+    if(ex){ try{ const p=ex.call(document); if(p&&p.catch)p.catch(function(){}); }catch(e){} }
+  }
+}
+function isFullscreen(){ return !!(document.fullscreenElement||document.webkitFullscreenElement||document.msFullscreenElement); }
+
+// ═══════════════════════════════════════════
 // LOGIN
+// ═══════════════════════════════════════════
 function startExam(){
   const name=$('inp-name').value.trim(), surname=$('inp-surname').value.trim(), email=$('inp-email').value.trim();
   let ok=true;
@@ -918,9 +961,100 @@ function startExam(){
   if(!ok)return;
   studentName=name+' '+surname; studentEmail=email;
   buildExam(); showScreen('examScreen'); startTimer();
+  examActive=true;
+  enterFullscreen();
+  attachProctoring();
 }
 
+// ═══════════════════════════════════════════
+// PROCTORING (nəzarət)
+// ═══════════════════════════════════════════
+function attachProctoring(){
+  document.addEventListener('visibilitychange', onVisibility);
+  window.addEventListener('blur', onBlur);
+  window.addEventListener('focus', onFocus);
+  document.addEventListener('fullscreenchange', onFsChange);
+  document.addEventListener('webkitfullscreenchange', onFsChange);
+  document.addEventListener('contextmenu', blockEvent);
+  document.addEventListener('copy', blockEvent);
+  document.addEventListener('cut', blockEvent);
+  document.addEventListener('paste', blockEvent);
+  document.addEventListener('keydown', onKeyDown, true);
+  window.addEventListener('beforeunload', onBeforeUnload);
+  $('resumeBtn').addEventListener('click', function(){
+    hideLock(); enterFullscreen();
+  });
+}
+function detachProctoring(){
+  document.removeEventListener('visibilitychange', onVisibility);
+  window.removeEventListener('blur', onBlur);
+  window.removeEventListener('focus', onFocus);
+  document.removeEventListener('fullscreenchange', onFsChange);
+  document.removeEventListener('webkitfullscreenchange', onFsChange);
+  document.removeEventListener('contextmenu', blockEvent);
+  document.removeEventListener('copy', blockEvent);
+  document.removeEventListener('cut', blockEvent);
+  document.removeEventListener('paste', blockEvent);
+  document.removeEventListener('keydown', onKeyDown, true);
+  window.removeEventListener('beforeunload', onBeforeUnload);
+}
+function blockEvent(e){ if(examActive){ e.preventDefault(); return false; } }
+
+function onKeyDown(e){
+  if(!examActive) return;
+  const k=(e.key||'').toLowerCase();
+  // F12 (developer tools)
+  if(e.key==='F12'){ e.preventDefault(); return false; }
+  // Ctrl/Cmd + C, V, X, U, S, P, A
+  if((e.ctrlKey||e.metaKey) && ['c','v','x','u','s','p','a'].includes(k)){ e.preventDefault(); return false; }
+  // Ctrl+Shift+I / J / C (developer tools)
+  if((e.ctrlKey||e.metaKey) && e.shiftKey && ['i','j','c'].includes(k)){ e.preventDefault(); return false; }
+}
+
+function onVisibility(){
+  if(examActive && document.hidden){ recordViolation('Tab dəyişdirmə və ya pəncərədən çıxma aşkarlandı.'); }
+}
+function onBlur(){
+  if(!examActive) return;
+  // qısa fokus itkilərini (fullscreen dialoq və s.) nəzərə almamaq üçün debounce
+  blurTimer=setTimeout(function(){
+    if(examActive && !document.hasFocus()){ recordViolation('Pəncərə fokusu itirildi (başqa proqrama keçid).'); }
+  }, 400);
+}
+function onFocus(){ if(blurTimer){ clearTimeout(blurTimer); blurTimer=null; } }
+
+function onFsChange(){
+  if(examActive && !isFullscreen()){
+    recordViolation('Tam ekran rejimindən çıxıldı.');
+    showLock('İmtahan tam ekran rejimindən çıxdınız. Davam etmək üçün tam ekrana qayıdın.');
+  }
+}
+function onBeforeUnload(e){
+  if(examActive){ e.preventDefault(); e.returnValue=''; return ''; }
+}
+
+function recordViolation(reason){
+  violations++;
+  const vb=$('violBlock'); if(vb){ vb.classList.add('active'); }
+  const vc=$('violCount'); if(vc){ vc.textContent=violations; }
+  const lv=$('lockViol'); if(lv){ lv.textContent=violations; }
+  if(violations>=MAX_VIOLATIONS){
+    showLock('Maksimum pozuntu sayına çatdınız ('+MAX_VIOLATIONS+'). İmtahan avtomatik bitirilir.');
+    setTimeout(function(){ submitExam(true); }, 1500);
+  }
+}
+
+function showLock(msg){
+  const lm=$('lockMsg'); if(lm){ lm.textContent=msg; }
+  $('lockMax').textContent=MAX_VIOLATIONS;
+  $('lockViol').textContent=violations;
+  $('lockOverlay').style.display='flex';
+}
+function hideLock(){ $('lockOverlay').style.display='none'; }
+
+// ═══════════════════════════════════════════
 // BUILD EXAM
+// ═══════════════════════════════════════════
 function buildExam(){
   const body=$('examBody'); body.innerHTML='';
   questions.forEach((q,qi)=>{
@@ -967,7 +1101,7 @@ function startTimer(){
     const tv=$('timer'); tv.textContent=fmtTime(timeLeft);
     if(timeLeft<=300)tv.className='timer-val warn';
     if(timeLeft<=60)tv.className='timer-val danger';
-    if(timeLeft<=0){clearInterval(timerInterval);submitExam();}
+    if(timeLeft<=0){clearInterval(timerInterval);submitExam(true);}
   },1000);
 }
 
@@ -975,7 +1109,7 @@ function startTimer(){
 function confirmSubmit(){
   const answered=Object.keys(userAnswers).filter(k=>userAnswers[k]&&userAnswers[k].length>0).length;
   const unanswered=questions.length-answered;
-  showModal(unanswered>0?unanswered+' sual cavabsız qalıb. Yenə də bitirmək istəyirsiniz?':'İmtahanı bitirmək istədiyinizə əminsinizmi?',submitExam);
+  showModal(unanswered>0?unanswered+' sual cavabsız qalıb. Yenə də bitirmək istəyirsiniz?':'İmtahanı bitirmək istədiyinizə əminsinizmi?',function(){ submitExam(false); });
 }
 
 function showModal(msg,onConfirm){
@@ -986,8 +1120,14 @@ function showModal(msg,onConfirm){
   document.getElementById('mc-btn').onclick=()=>{overlay.remove();onConfirm();};
 }
 
-function submitExam(){
+function submitExam(auto){
+  if(finished) return;
+  finished=true;
+  examActive=false;              // əvvəlcə nəzarəti söndür ki, fullscreen çıxışı pozuntu saymasın
+  detachProctoring();
+  hideLock();
   clearInterval(timerInterval);
+  exitFullscreen();              // artıq sərbəst çıxış
   const elapsed=Math.round((Date.now()-startTime)/1000);
   buildResult(elapsed);
   showScreen('resultScreen');
@@ -1007,7 +1147,7 @@ function sendToSheets(elapsed){
   const mins=Math.floor(elapsed/60),secs=elapsed%60;
   fetch(SCRIPT_URL,{
     method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({name:studentName,email:studentEmail,score:correct,passed:correct>=PASS_SCORE,correct:correct,wrong:wrong,unanswered:unanswered,time:mins+':'+String(secs).padStart(2,'0')})
+    body:JSON.stringify({name:studentName,email:studentEmail,score:correct,passed:correct>=PASS_SCORE,correct:correct,wrong:wrong,unanswered:unanswered,violations:violations,time:mins+':'+String(secs).padStart(2,'0')})
   }).catch(function(){});
 }
 
@@ -1028,7 +1168,7 @@ function buildResult(elapsed){
     else{wrong++;if(!topicErrors[q.topic])topicErrors[q.topic]=0;topicErrors[q.topic]++;}
   });
   const pct=Math.round(correct/questions.length*100),pass=correct>=PASS_SCORE;
-  $('resStudentInfo').textContent=studentName+' · '+studentEmail;
+  $('resStudentInfo').textContent=studentName+' · '+studentEmail+(violations>0?(' · 🛡️ '+violations+' pozuntu'):'');
   $('scoreNum').textContent=correct+'/'+questions.length;
   const sc=$('scoreCircle');sc.className='score-circle '+(pass?'pass':'fail');sc.style.setProperty('--pct',pct);
   $('verdictText').className='verdict '+(pass?'pass':'fail');
